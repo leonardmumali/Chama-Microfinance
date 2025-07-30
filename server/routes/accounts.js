@@ -490,4 +490,182 @@ router.put("/admin/:id/reject", authenticateToken, async (req, res) => {
   }
 });
 
+// Credit account (Admin/Manager only)
+router.post("/:id/credit", authenticateToken, async (req, res) => {
+  try {
+    // Check if user has admin or manager role
+    if (req.user.role !== "admin" && req.user.role !== "manager") {
+      return res.status(403).json({ message: "Access denied. Admin or Manager role required." });
+    }
+
+    const { amount, description, reference } = req.body;
+    const accountId = req.params.id;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
+
+    // Get account details
+    const account = await getRow(
+      "SELECT * FROM accounts WHERE id = ? AND status = 'active'",
+      [accountId]
+    );
+
+    if (!account) {
+      return res.status(404).json({ message: "Account not found or inactive" });
+    }
+
+    // Generate transaction number
+    const transactionNumber = `TXN${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    // Create transaction record
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, reference_id,
+        reference_type, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        accountId,
+        account.user_id,
+        "credit",
+        amount,
+        account.balance,
+        account.balance + amount,
+        description || "Account credit",
+        reference || null,
+        "account_credit",
+        req.user.id,
+      ]
+    );
+
+    // Update account balance
+    await runQuery(
+      "UPDATE accounts SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [amount, accountId]
+    );
+
+    res.json({
+      message: "Account credited successfully",
+      transaction_number: transactionNumber,
+      new_balance: account.balance + amount,
+      credited_amount: amount,
+    });
+  } catch (error) {
+    console.error("Error crediting account:", error);
+    res.status(500).json({ message: "Error crediting account" });
+  }
+});
+
+// Debit account (Admin/Manager only)
+router.post("/:id/debit", authenticateToken, async (req, res) => {
+  try {
+    // Check if user has admin or manager role
+    if (req.user.role !== "admin" && req.user.role !== "manager") {
+      return res.status(403).json({ message: "Access denied. Admin or Manager role required." });
+    }
+
+    const { amount, description, reference } = req.body;
+    const accountId = req.params.id;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
+
+    // Get account details
+    const account = await getRow(
+      "SELECT * FROM accounts WHERE id = ? AND status = 'active'",
+      [accountId]
+    );
+
+    if (!account) {
+      return res.status(404).json({ message: "Account not found or inactive" });
+    }
+
+    // Check if account has sufficient balance
+    if (account.balance < amount) {
+      return res.status(400).json({ 
+        message: "Insufficient balance",
+        current_balance: account.balance,
+        requested_amount: amount
+      });
+    }
+
+    // Check minimum balance requirement
+    if (account.balance - amount < account.minimum_balance) {
+      return res.status(400).json({
+        message: "Debit would violate minimum balance requirement",
+        minimum_balance: account.minimum_balance,
+        remaining_balance: account.balance - amount
+      });
+    }
+
+    // Generate transaction number
+    const transactionNumber = `TXN${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    // Create transaction record
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, reference_id,
+        reference_type, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        accountId,
+        account.user_id,
+        "debit",
+        amount,
+        account.balance,
+        account.balance - amount,
+        description || "Account debit",
+        reference || null,
+        "account_debit",
+        req.user.id,
+      ]
+    );
+
+    // Update account balance
+    await runQuery(
+      "UPDATE accounts SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [amount, accountId]
+    );
+
+    res.json({
+      message: "Account debited successfully",
+      transaction_number: transactionNumber,
+      new_balance: account.balance - amount,
+      debited_amount: amount,
+    });
+  } catch (error) {
+    console.error("Error debiting account:", error);
+    res.status(500).json({ message: "Error debiting account" });
+  }
+});
+
+// Get account balance
+router.get("/:id/balance", authenticateToken, async (req, res) => {
+  try {
+    const account = await getRow(
+      "SELECT id, balance, account_number, account_name FROM accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+      [req.params.id, req.user.id]
+    );
+
+    if (!account) {
+      return res.status(404).json({ message: "Account not found" });
+    }
+
+    res.json({
+      account_id: account.id,
+      account_number: account.account_number,
+      account_name: account.account_name,
+      balance: account.balance,
+    });
+  } catch (error) {
+    console.error("Error fetching account balance:", error);
+    res.status(500).json({ message: "Error fetching account balance" });
+  }
+});
+
 module.exports = router;

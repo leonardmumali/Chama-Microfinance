@@ -23,7 +23,7 @@ import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
 import Dashboard from "./pages/dashboard/Dashboard";
 import Profile from "./pages/profile/Profile";
-import AccountManagement from "./pages/accounts/AccountManagement";
+import Accounts from "./pages/accounts/Accounts";
 import Loans from "./pages/loans/Loans";
 import LoanApplication from "./pages/loans/LoanApplication";
 import LoanDetails from "./pages/loans/LoanDetails";
@@ -116,7 +116,7 @@ function App() {
                   element={
                     <ProtectedRoute>
                       <DashboardLayout>
-                        <AccountManagement />
+                        <Accounts />
                       </DashboardLayout>
                     </ProtectedRoute>
                   }
