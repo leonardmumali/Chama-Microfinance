@@ -1,8 +1,8 @@
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  text-align: left;
 }
 
 .logo {
@@ -39,4 +39,38 @@
 
 .read-the-docs {
   color: #888;
+}
+
+/* Sidebar Styles */
+.sidebar {
+  transition: all 0.3s ease;
+}
+
+.sidebar .nav-link:hover {
+  background-color: rgba(0, 123, 255, 0.1) !important;
+  transform: translateX(5px);
+}
+
+.sidebar .nav-link.active {
+  box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3);
+}
+
+/* Dashboard Layout Styles */
+.dashboard-layout {
+  min-height: 100vh;
+}
+
+.main-content {
+  transition: margin-left 0.3s ease;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 200px !important;
+  }
+
+  .main-content {
+    margin-left: 200px !important;
+  }
 }

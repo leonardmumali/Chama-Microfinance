@@ -85,8 +85,8 @@ const Dashboard = () => {
   }
 
   return (
-    <div className={`py-4 ${isDarkMode ? "bg-dark text-light" : "bg-light"}`}>
-      <div className="container">
+    <div className={`p-4 ${isDarkMode ? "bg-dark text-light" : "bg-light"}`}>
+      <div className="container-fluid">
         {/* Welcome Section */}
         <div className="row mb-4">
           <div className="col-12">

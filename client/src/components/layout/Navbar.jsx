@@ -1,5 +1,5 @@
 import React from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import { FaSun, FaMoon } from "react-icons/fa";
@@ -8,6 +8,19 @@ const Navbar = () => {
   const { user, logout } = useAuth();
   const { isDarkMode, toggleTheme } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Check if we're in the dashboard area
+  const isDashboardArea = [
+    "/dashboard",
+    "/accounts",
+    "/loans",
+    "/savings",
+    "/investments",
+    "/profile",
+    "/transactions",
+    "/groups",
+  ].some((path) => location.pathname.startsWith(path));
 
   const handleLogout = () => {
     logout();
@@ -36,18 +49,22 @@ const Navbar = () => {
         <div className="navbar-nav ms-auto">
           {user ? (
             <>
-              <Link className="nav-link" to="/dashboard">
-                Dashboard
-              </Link>
-              <Link className="nav-link" to="/loans">
-                Loans
-              </Link>
-              <Link className="nav-link" to="/savings">
-                Savings
-              </Link>
-              <Link className="nav-link" to="/profile">
-                Profile
-              </Link>
+              {!isDashboardArea && (
+                <>
+                  <Link className="nav-link" to="/dashboard">
+                    Dashboard
+                  </Link>
+                  <Link className="nav-link" to="/loans">
+                    Loans
+                  </Link>
+                  <Link className="nav-link" to="/savings">
+                    Savings
+                  </Link>
+                  <Link className="nav-link" to="/profile">
+                    Profile
+                  </Link>
+                </>
+              )}
               <button
                 className="btn btn-outline-danger ms-2"
                 onClick={handleLogout}

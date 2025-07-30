@@ -4,6 +4,7 @@ import {
   Routes,
   Route,
   Navigate,
+  useLocation,
 } from "react-router-dom";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -13,6 +14,7 @@ import "bootstrap/dist/js/bootstrap.bundle.min.js";
 // Components
 import Navbar from "./components/layout/Navbar";
 import Footer from "./components/layout/Footer";
+import DashboardLayout from "./components/layout/DashboardLayout";
 import ThemeProvider from "./contexts/ThemeContext";
 
 // Pages
@@ -21,12 +23,14 @@ import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
 import Dashboard from "./pages/dashboard/Dashboard";
 import Profile from "./pages/profile/Profile";
+import AccountManagement from "./pages/accounts/AccountManagement";
 import Loans from "./pages/loans/Loans";
 import LoanApplication from "./pages/loans/LoanApplication";
 import LoanDetails from "./pages/loans/LoanDetails";
 import Savings from "./pages/savings/Savings";
 import Transactions from "./pages/transactions/Transactions";
 import Groups from "./pages/groups/Groups";
+import Investments from "./pages/investments/Investments";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import UserManagement from "./pages/admin/UserManagement";
 import KYCVerification from "./pages/admin/KYCVerification";
@@ -35,6 +39,23 @@ import Settings from "./pages/admin/Settings";
 
 // Context
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+
+// Conditional Footer Component
+const ConditionalFooter = () => {
+  const location = useLocation();
+  const isDashboardArea = [
+    "/dashboard",
+    "/accounts",
+    "/loans",
+    "/savings",
+    "/investments",
+    "/profile",
+    "/transactions",
+    "/groups",
+  ].some((path) => location.pathname.startsWith(path));
+
+  return isDashboardArea ? null : <Footer />;
+};
 
 // Protected Route Component
 const ProtectedRoute = ({ children, allowedRoles = [] }) => {
@@ -83,7 +104,20 @@ function App() {
                   path="/dashboard"
                   element={
                     <ProtectedRoute>
-                      <Dashboard />
+                      <DashboardLayout>
+                        <Dashboard />
+                      </DashboardLayout>
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/accounts"
+                  element={
+                    <ProtectedRoute>
+                      <DashboardLayout>
+                        <AccountManagement />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -92,7 +126,9 @@ function App() {
                   path="/profile"
                   element={
                     <ProtectedRoute>
-                      <Profile />
+                      <DashboardLayout>
+                        <Profile />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -101,7 +137,9 @@ function App() {
                   path="/loans"
                   element={
                     <ProtectedRoute>
-                      <Loans />
+                      <DashboardLayout>
+                        <Loans />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -110,7 +148,9 @@ function App() {
                   path="/loans/apply"
                   element={
                     <ProtectedRoute allowedRoles={["borrower", "member"]}>
-                      <LoanApplication />
+                      <DashboardLayout>
+                        <LoanApplication />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -119,7 +159,9 @@ function App() {
                   path="/loans/:id"
                   element={
                     <ProtectedRoute>
-                      <LoanDetails />
+                      <DashboardLayout>
+                        <LoanDetails />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -128,7 +170,9 @@ function App() {
                   path="/savings"
                   element={
                     <ProtectedRoute>
-                      <Savings />
+                      <DashboardLayout>
+                        <Savings />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -137,7 +181,9 @@ function App() {
                   path="/transactions"
                   element={
                     <ProtectedRoute>
-                      <Transactions />
+                      <DashboardLayout>
+                        <Transactions />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -146,7 +192,20 @@ function App() {
                   path="/groups"
                   element={
                     <ProtectedRoute>
-                      <Groups />
+                      <DashboardLayout>
+                        <Groups />
+                      </DashboardLayout>
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/investments"
+                  element={
+                    <ProtectedRoute>
+                      <DashboardLayout>
+                        <Investments />
+                      </DashboardLayout>
                     </ProtectedRoute>
                   }
                 />
@@ -198,7 +257,7 @@ function App() {
                 />
               </Routes>
             </main>
-            <Footer />
+            <ConditionalFooter />
             <ToastContainer
               position="top-right"
               autoClose={5000}

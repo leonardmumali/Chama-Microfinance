@@ -1,335 +1,660 @@
-const express = require('express');
-const { runQuery, getRow, getAll } = require('../database/database');
-const { authenticateToken, requireAdminOrManager } = require('../middleware/auth');
-
+const express = require("express");
 const router = express.Router();
+const { runQuery, getRow, getAll } = require("../database/enhanced_schema");
+const { authenticateToken } = require("../middleware/auth");
+const { v4: uuidv4 } = require("uuid");
 
-// Get user's savings account
-router.get('/my-account', authenticateToken, async (req, res) => {
+// Get user's savings accounts
+router.get("/my-accounts", authenticateToken, async (req, res) => {
   try {
-    const account = await getRow(`
-      SELECT s.*, u.first_name, u.last_name, u.username
-      FROM savings s
-      LEFT JOIN users u ON s.user_id = u.id
-      WHERE s.user_id = ? AND s.account_type = 'personal'
-    `, [req.user.userId]);
+    const accounts = await getAll(
+      `SELECT a.*, at.name as account_type_name, at.code as account_type_code,
+              g.name as group_name
+       FROM accounts a
+       JOIN account_types at ON a.account_type_id = at.id
+       LEFT JOIN groups g ON a.group_id = g.id
+       WHERE a.user_id = ? AND a.status = 'active'
+       ORDER BY a.created_at DESC`,
+      [req.user.id]
+    );
 
-    if (!account) {
-      return res.status(404).json({
-        error: 'Savings account not found'
-      });
-    }
-
-    res.json({
-      account
-    });
-
+    res.json(accounts);
   } catch (error) {
-    console.error('Get savings account error:', error);
-    res.status(500).json({
-      error: 'Failed to get savings account',
-      message: error.message
-    });
+    console.error("Error fetching savings accounts:", error);
+    res.status(500).json({ message: "Error fetching savings accounts" });
   }
 });
 
-// Get all savings accounts (admin/manager only)
-router.get('/', authenticateToken, requireAdminOrManager, async (req, res) => {
+// Get savings account balance
+router.get("/balance", authenticateToken, async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
-    const offset = (page - 1) * limit;
+    const accounts = await getAll(
+      "SELECT SUM(balance) as total_balance FROM accounts WHERE user_id = ? AND status = 'active'",
+      [req.user.id]
+    );
 
-    let whereClause = '';
-    let params = [];
+    const totalBalance = accounts[0]?.total_balance || 0;
 
-    if (status) {
-      whereClause = 'WHERE s.status = ?';
-      params.push(status);
+    res.json({ balance: totalBalance });
+  } catch (error) {
+    console.error("Error fetching balance:", error);
+    res.status(500).json({ message: "Error fetching balance" });
+  }
+});
+
+// Make deposit
+router.post("/deposit", authenticateToken, async (req, res) => {
+  try {
+    const {
+      account_id,
+      amount,
+      payment_method,
+      payment_reference,
+      description,
+    } = req.body;
+
+    // Validate account
+    const account = await getRow(
+      "SELECT * FROM accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+      [account_id, req.user.id]
+    );
+
+    if (!account) {
+      return res.status(404).json({ message: "Account not found" });
     }
 
-    const accounts = await getAll(`
-      SELECT s.*, u.first_name, u.last_name, u.username, u.phone, u.email
-      FROM savings s
-      LEFT JOIN users u ON s.user_id = u.id
-      ${whereClause}
-      ORDER BY s.created_at DESC
-      LIMIT ? OFFSET ?
-    `, [...params, parseInt(limit), offset]);
+    if (amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
 
-    // Get total count
-    const countResult = await getRow(`
-      SELECT COUNT(*) as total FROM savings s ${whereClause}
-    `, params);
+    // Check daily/monthly limits
+    if (account.daily_limit) {
+      const todayDeposits = await getRow(
+        `SELECT COALESCE(SUM(amount), 0) as total 
+         FROM transactions 
+         WHERE account_id = ? AND type = 'deposit' 
+         AND DATE(created_at) = DATE('now')`,
+        [account_id]
+      );
 
-    res.json({
-      accounts,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: countResult.total,
-        pages: Math.ceil(countResult.total / limit)
+      if (todayDeposits.total + amount > account.daily_limit) {
+        return res.status(400).json({
+          message: "Daily deposit limit exceeded",
+        });
       }
-    });
+    }
 
-  } catch (error) {
-    console.error('Get all savings error:', error);
-    res.status(500).json({
-      error: 'Failed to get savings accounts',
-      message: error.message
+    if (account.monthly_limit) {
+      const monthDeposits = await getRow(
+        `SELECT COALESCE(SUM(amount), 0) as total 
+         FROM transactions 
+         WHERE account_id = ? AND type = 'deposit' 
+         AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')`,
+        [account_id]
+      );
+
+      if (monthDeposits.total + amount > account.monthly_limit) {
+        return res.status(400).json({
+          message: "Monthly deposit limit exceeded",
+        });
+      }
+    }
+
+    // Generate transaction number
+    const transactionNumber = `TXN${Date.now()}${Math.floor(
+      Math.random() * 1000
+    )}`;
+
+    // Create transaction
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, payment_method,
+        payment_reference, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        account_id,
+        req.user.id,
+        "deposit",
+        amount,
+        account.balance,
+        account.balance + amount,
+        description || "Deposit",
+        payment_method,
+        payment_reference,
+        req.user.id,
+      ]
+    );
+
+    // Update account balance
+    await runQuery(
+      "UPDATE accounts SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [amount, account_id]
+    );
+
+    // Send notifications if enabled
+    if (account.sms_notifications) {
+      // TODO: Implement SMS notification
+      console.log(
+        `SMS: Deposit of ${amount} received in account ${account.account_number}`
+      );
+    }
+
+    if (account.email_notifications) {
+      // TODO: Implement email notification
+      console.log(
+        `Email: Deposit of ${amount} received in account ${account.account_number}`
+      );
+    }
+
+    res.json({
+      message: "Deposit successful",
+      transaction_number: transactionNumber,
+      new_balance: account.balance + amount,
     });
+  } catch (error) {
+    console.error("Error making deposit:", error);
+    res.status(500).json({ message: "Error making deposit" });
   }
 });
 
-// Deposit money
-router.post('/deposit', authenticateToken, async (req, res) => {
+// Make withdrawal
+router.post("/withdraw", authenticateToken, async (req, res) => {
   try {
-    const { amount, description } = req.body;
+    const { account_id, amount, description } = req.body;
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        error: 'Valid deposit amount is required'
-      });
-    }
-
-    // Get user's savings account
-    const account = await getRow(`
-      SELECT * FROM savings WHERE user_id = ? AND account_type = 'personal'
-    `, [req.user.userId]);
+    // Validate account
+    const account = await getRow(
+      "SELECT * FROM accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+      [account_id, req.user.id]
+    );
 
     if (!account) {
-      return res.status(404).json({
-        error: 'Savings account not found'
-      });
+      return res.status(404).json({ message: "Account not found" });
     }
 
-    if (account.status !== 'active') {
+    if (amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
+
+    if (account.balance < amount) {
+      return res.status(400).json({ message: "Insufficient balance" });
+    }
+
+    if (account.balance - amount < account.minimum_balance) {
       return res.status(400).json({
-        error: 'Account is not active'
+        message: "Withdrawal would violate minimum balance requirement",
       });
     }
 
     // Generate transaction number
-    const transactionNumber = 'TXN' + Date.now() + Math.random().toString(36).substr(2, 5).toUpperCase();
+    const transactionNumber = `TXN${Date.now()}${Math.floor(
+      Math.random() * 1000
+    )}`;
 
-    // Calculate new balance
-    const newBalance = parseFloat(account.balance) + parseFloat(amount);
+    // Create transaction
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        account_id,
+        req.user.id,
+        "withdrawal",
+        amount,
+        account.balance,
+        account.balance - amount,
+        description || "Withdrawal",
+        req.user.id,
+      ]
+    );
 
     // Update account balance
-    await runQuery(`
-      UPDATE savings SET balance = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [newBalance, account.id]);
-
-    // Create transaction record
-    await runQuery(`
-      INSERT INTO transactions (
-        transaction_number, user_id, type, amount, balance_before, balance_after,
-        description, reference_id, reference_type, status
-      ) VALUES (?, ?, 'deposit', ?, ?, ?, ?, ?, 'savings', 'completed')
-    `, [transactionNumber, req.user.userId, amount, account.balance, newBalance, 
-        description || `Deposit to savings account`, account.id]);
+    await runQuery(
+      "UPDATE accounts SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [amount, account_id]
+    );
 
     res.json({
-      message: 'Deposit successful',
+      message: "Withdrawal successful",
       transaction_number: transactionNumber,
-      amount,
-      new_balance: newBalance
+      new_balance: account.balance - amount,
     });
-
   } catch (error) {
-    console.error('Deposit error:', error);
-    res.status(500).json({
-      error: 'Failed to process deposit',
-      message: error.message
-    });
+    console.error("Error making withdrawal:", error);
+    res.status(500).json({ message: "Error making withdrawal" });
   }
 });
 
-// Withdraw money
-router.post('/withdraw', authenticateToken, async (req, res) => {
+// Create fixed deposit
+router.post("/fixed-deposits", authenticateToken, async (req, res) => {
   try {
-    const { amount, description } = req.body;
+    const {
+      account_id,
+      amount,
+      term_months,
+      interest_rate,
+      auto_renewal = false,
+      renewal_term_months,
+    } = req.body;
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        error: 'Valid withdrawal amount is required'
-      });
-    }
-
-    // Get user's savings account
-    const account = await getRow(`
-      SELECT * FROM savings WHERE user_id = ? AND account_type = 'personal'
-    `, [req.user.userId]);
+    // Validate account
+    const account = await getRow(
+      "SELECT * FROM accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+      [account_id, req.user.id]
+    );
 
     if (!account) {
-      return res.status(404).json({
-        error: 'Savings account not found'
-      });
+      return res.status(404).json({ message: "Account not found" });
     }
 
-    if (account.status !== 'active') {
-      return res.status(400).json({
-        error: 'Account is not active'
-      });
+    if (amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
     }
 
-    // Check if sufficient balance
-    if (parseFloat(account.balance) < parseFloat(amount)) {
-      return res.status(400).json({
-        error: 'Insufficient balance'
-      });
+    if (account.balance < amount) {
+      return res.status(400).json({ message: "Insufficient balance" });
     }
 
-    // Generate transaction number
-    const transactionNumber = 'TXN' + Date.now() + Math.random().toString(36).substr(2, 5).toUpperCase();
+    if (term_months < 1 || term_months > 60) {
+      return res
+        .status(400)
+        .json({ message: "Term must be between 1 and 60 months" });
+    }
 
-    // Calculate new balance
-    const newBalance = parseFloat(account.balance) - parseFloat(amount);
+    // Calculate dates
+    const startDate = new Date();
+    const maturityDate = new Date();
+    maturityDate.setMonth(maturityDate.getMonth() + term_months);
 
-    // Update account balance
-    await runQuery(`
-      UPDATE savings SET balance = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [newBalance, account.id]);
+    // Generate deposit number
+    const depositNumber = `FD${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    // Calculate interest and total amount
+    const interestAmount = (amount * interest_rate * term_months) / (12 * 100);
+    const totalAmount = amount + interestAmount;
+
+    // Create fixed deposit
+    const result = await runQuery(
+      `INSERT INTO fixed_deposits (
+        account_id, deposit_number, amount, interest_rate, term_months,
+        start_date, maturity_date, interest_amount, total_amount,
+        auto_renewal, renewal_term_months
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        account_id,
+        depositNumber,
+        amount,
+        interest_rate,
+        term_months,
+        startDate.toISOString().split("T")[0],
+        maturityDate.toISOString().split("T")[0],
+        interestAmount,
+        totalAmount,
+        auto_renewal,
+        renewal_term_months,
+      ]
+    );
+
+    // Block the amount in the account
+    await runQuery(
+      "UPDATE accounts SET blocked_amount = blocked_amount + ? WHERE id = ?",
+      [amount, account_id]
+    );
 
     // Create transaction record
-    await runQuery(`
-      INSERT INTO transactions (
-        transaction_number, user_id, type, amount, balance_before, balance_after,
-        description, reference_id, reference_type, status
-      ) VALUES (?, ?, 'withdrawal', ?, ?, ?, ?, ?, 'savings', 'completed')
-    `, [transactionNumber, req.user.userId, amount, account.balance, newBalance, 
-        description || `Withdrawal from savings account`, account.id]);
+    const transactionNumber = `TXN${Date.now()}${Math.floor(
+      Math.random() * 1000
+    )}`;
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, reference_id,
+        reference_type, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        account_id,
+        req.user.id,
+        "investment_purchase",
+        amount,
+        account.balance,
+        account.balance,
+        `Fixed deposit created - ${depositNumber}`,
+        result.id,
+        "fixed_deposit",
+        req.user.id,
+      ]
+    );
 
-    res.json({
-      message: 'Withdrawal successful',
-      transaction_number: transactionNumber,
-      amount,
-      new_balance: newBalance
+    res.status(201).json({
+      message: "Fixed deposit created successfully",
+      deposit_number: depositNumber,
+      deposit_id: result.id,
     });
-
   } catch (error) {
-    console.error('Withdrawal error:', error);
-    res.status(500).json({
-      error: 'Failed to process withdrawal',
-      message: error.message
-    });
+    console.error("Error creating fixed deposit:", error);
+    res.status(500).json({ message: "Error creating fixed deposit" });
   }
 });
 
-// Get transaction history
-router.get('/transactions', authenticateToken, async (req, res) => {
+// Get user's fixed deposits
+router.get("/fixed-deposits", authenticateToken, async (req, res) => {
   try {
-    const { page = 1, limit = 20, type } = req.query;
-    const offset = (page - 1) * limit;
+    const deposits = await getAll(
+      `SELECT fd.*, a.account_number, a.account_name
+       FROM fixed_deposits fd
+       JOIN accounts a ON fd.account_id = a.id
+       WHERE a.user_id = ?
+       ORDER BY fd.created_at DESC`,
+      [req.user.id]
+    );
 
-    let whereClause = 'WHERE t.user_id = ?';
-    let params = [req.user.userId];
+    res.json(deposits);
+  } catch (error) {
+    console.error("Error fetching fixed deposits:", error);
+    res.status(500).json({ message: "Error fetching fixed deposits" });
+  }
+});
 
-    if (type) {
-      whereClause += ' AND t.type = ?';
-      params.push(type);
+// Withdraw fixed deposit early
+router.post("/fixed-deposits/:id/withdraw", authenticateToken, async (req, res) => {
+  try {
+    const deposit = await getRow(
+      `SELECT fd.*, a.user_id, a.account_number, a.balance, a.blocked_amount
+       FROM fixed_deposits fd
+       JOIN accounts a ON fd.account_id = a.id
+       WHERE fd.id = ? AND a.user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+
+    if (!deposit) {
+      return res.status(404).json({ message: "Fixed deposit not found" });
     }
 
-    const transactions = await getAll(`
-      SELECT t.*, s.account_number
-      FROM transactions t
-      LEFT JOIN savings s ON t.reference_id = s.id AND t.reference_type = 'savings'
-      ${whereClause}
-      ORDER BY t.created_at DESC
-      LIMIT ? OFFSET ?
-    `, [...params, parseInt(limit), offset]);
+    if (deposit.status !== "active") {
+      return res.status(400).json({ message: "Fixed deposit is not active" });
+    }
 
-    // Get total count
-    const countResult = await getRow(`
-      SELECT COUNT(*) as total FROM transactions t ${whereClause}
-    `, params);
+    // Calculate early withdrawal penalty
+    const daysToMaturity = Math.ceil(
+      (new Date(deposit.maturity_date) - new Date()) / (1000 * 60 * 60 * 24)
+    );
+    const penaltyRate = deposit.early_withdrawal_penalty || 2.0; // Default 2%
+    const penaltyAmount = (deposit.amount * penaltyRate) / 100;
+    const withdrawalAmount = deposit.amount - penaltyAmount;
+
+    // Update fixed deposit status
+    await runQuery(
+      `UPDATE fixed_deposits SET 
+       status = 'withdrawn', 
+       withdrawn_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [req.params.id]
+    );
+
+    // Unblock amount and add withdrawal amount to account
+    await runQuery(
+      `UPDATE accounts SET 
+       blocked_amount = blocked_amount - ?, 
+       balance = balance + ?,
+       updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [deposit.amount, withdrawalAmount, deposit.account_id]
+    );
+
+    // Create transaction records
+    const transactionNumber = `TXN${Date.now()}${Math.floor(
+      Math.random() * 1000
+    )}`;
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, reference_id,
+        reference_type, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        deposit.account_id,
+        req.user.id,
+        "investment_sale",
+        withdrawalAmount,
+        deposit.balance,
+        deposit.balance + withdrawalAmount,
+        `Early withdrawal from fixed deposit ${deposit.deposit_number} (Penalty: ${penaltyAmount})`,
+        deposit.id,
+        "fixed_deposit",
+        req.user.id,
+      ]
+    );
 
     res.json({
-      transactions,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: countResult.total,
-        pages: Math.ceil(countResult.total / limit)
-      }
+      message: "Fixed deposit withdrawn successfully",
+      withdrawal_amount: withdrawalAmount,
+      penalty_amount: penaltyAmount,
+      transaction_number: transactionNumber,
     });
-
   } catch (error) {
-    console.error('Get transactions error:', error);
-    res.status(500).json({
-      error: 'Failed to get transaction history',
-      message: error.message
+    console.error("Error withdrawing fixed deposit:", error);
+    res.status(500).json({ message: "Error withdrawing fixed deposit" });
+  }
+});
+
+// Create target savings
+router.post("/target-savings", authenticateToken, async (req, res) => {
+  try {
+    const {
+      account_id,
+      target_name,
+      target_amount,
+      target_date,
+      frequency = "monthly",
+      contribution_amount,
+    } = req.body;
+
+    // Validate account
+    const account = await getRow(
+      "SELECT * FROM accounts WHERE id = ? AND user_id = ? AND status = 'active'",
+      [account_id, req.user.id]
+    );
+
+    if (!account) {
+      return res.status(404).json({ message: "Account not found" });
+    }
+
+    if (target_amount <= 0) {
+      return res.status(400).json({ message: "Invalid target amount" });
+    }
+
+    // Create target savings
+    const result = await runQuery(
+      `INSERT INTO target_savings (
+        account_id, target_name, target_amount, target_date,
+        frequency, contribution_amount
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        account_id,
+        target_name,
+        target_amount,
+        target_date,
+        frequency,
+        contribution_amount,
+      ]
+    );
+
+    res.status(201).json({
+      message: "Target savings created successfully",
+      target_id: result.id,
     });
+  } catch (error) {
+    console.error("Error creating target savings:", error);
+    res.status(500).json({ message: "Error creating target savings" });
+  }
+});
+
+// Get user's target savings
+router.get("/target-savings", authenticateToken, async (req, res) => {
+  try {
+    const targets = await getAll(
+      `SELECT ts.*, a.account_number, a.account_name
+       FROM target_savings ts
+       JOIN accounts a ON ts.account_id = a.id
+       WHERE a.user_id = ?
+       ORDER BY ts.created_at DESC`,
+      [req.user.id]
+    );
+
+    res.json(targets);
+  } catch (error) {
+    console.error("Error fetching target savings:", error);
+    res.status(500).json({ message: "Error fetching target savings" });
+  }
+});
+
+// Contribute to target savings
+router.post("/target-savings/:id/contribute", authenticateToken, async (req, res) => {
+  try {
+    const { amount } = req.body;
+
+    const target = await getRow(
+      `SELECT ts.*, a.user_id, a.balance, a.account_number
+       FROM target_savings ts
+       JOIN accounts a ON ts.account_id = a.id
+       WHERE ts.id = ? AND a.user_id = ? AND ts.status = 'active'`,
+      [req.params.id, req.user.id]
+    );
+
+    if (!target) {
+      return res.status(404).json({ message: "Target savings not found" });
+    }
+
+    if (amount <= 0) {
+      return res.status(400).json({ message: "Invalid amount" });
+    }
+
+    if (target.current_amount + amount > target.target_amount) {
+      return res.status(400).json({
+        message: "Contribution would exceed target amount",
+      });
+    }
+
+    // Update target savings
+    const newAmount = target.current_amount + amount;
+    const isCompleted = newAmount >= target.target_amount;
+
+    await runQuery(
+      `UPDATE target_savings SET 
+       current_amount = ?, 
+       status = ?,
+       completed_at = ?
+       WHERE id = ?`,
+      [
+        newAmount,
+        isCompleted ? "completed" : "active",
+        isCompleted ? new Date() : null,
+        req.params.id,
+      ]
+    );
+
+    // Create transaction
+    const transactionNumber = `TXN${Date.now()}${Math.floor(
+      Math.random() * 1000
+    )}`;
+    await runQuery(
+      `INSERT INTO transactions (
+        transaction_number, account_id, user_id, type, amount,
+        balance_before, balance_after, description, reference_id,
+        reference_type, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        transactionNumber,
+        target.account_id,
+        req.user.id,
+        "deposit",
+        amount,
+        target.balance,
+        target.balance + amount,
+        `Contribution to target: ${target.target_name}`,
+        req.params.id,
+        "target_savings",
+        req.user.id,
+      ]
+    );
+
+    // Update account balance
+    await runQuery(
+      "UPDATE accounts SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [amount, target.account_id]
+    );
+
+    res.json({
+      message: "Contribution successful",
+      new_amount: newAmount,
+      is_completed: isCompleted,
+      transaction_number: transactionNumber,
+    });
+  } catch (error) {
+    console.error("Error contributing to target savings:", error);
+    res.status(500).json({ message: "Error contributing to target savings" });
   }
 });
 
 // Get savings statistics
-router.get('/stats/overview', authenticateToken, requireAdminOrManager, async (req, res) => {
+router.get("/statistics", authenticateToken, async (req, res) => {
   try {
-    const stats = await getRow(`
-      SELECT 
-        COUNT(*) as total_accounts,
-        COUNT(CASE WHEN status = 'active' THEN 1 END) as active_accounts,
-        COUNT(CASE WHEN status = 'inactive' THEN 1 END) as inactive_accounts,
-        COUNT(CASE WHEN status = 'closed' THEN 1 END) as closed_accounts,
-        SUM(balance) as total_balance,
-        AVG(balance) as average_balance,
-        SUM(CASE WHEN account_type = 'personal' THEN balance ELSE 0 END) as personal_balance,
-        SUM(CASE WHEN account_type = 'group' THEN balance ELSE 0 END) as group_balance
-      FROM savings
-    `);
+    // Total balance
+    const totalBalance = await getRow(
+      "SELECT SUM(balance) as total FROM accounts WHERE user_id = ? AND status = 'active'",
+      [req.user.id]
+    );
+
+    // Fixed deposits
+    const fixedDeposits = await getRow(
+      `SELECT COUNT(*) as count, SUM(amount) as total_amount
+       FROM fixed_deposits fd
+       JOIN accounts a ON fd.account_id = a.id
+       WHERE a.user_id = ? AND fd.status = 'active'`,
+      [req.user.id]
+    );
+
+    // Target savings
+    const targetSavings = await getRow(
+      `SELECT COUNT(*) as count, SUM(target_amount) as total_target
+       FROM target_savings ts
+       JOIN accounts a ON ts.account_id = a.id
+       WHERE a.user_id = ? AND ts.status = 'active'`,
+      [req.user.id]
+    );
+
+    // Monthly deposits
+    const monthlyDeposits = await getRow(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM transactions t
+       JOIN accounts a ON t.account_id = a.id
+       WHERE a.user_id = ? AND t.type = 'deposit'
+       AND strftime('%Y-%m', t.created_at) = strftime('%Y-%m', 'now')`,
+      [req.user.id]
+    );
 
     res.json({
-      stats
+      total_balance: totalBalance.total || 0,
+      fixed_deposits: {
+        count: fixedDeposits.count || 0,
+        total_amount: fixedDeposits.total_amount || 0,
+      },
+      target_savings: {
+        count: targetSavings.count || 0,
+        total_target: targetSavings.total_target || 0,
+      },
+      monthly_deposits: monthlyDeposits.total || 0,
     });
-
   } catch (error) {
-    console.error('Savings stats error:', error);
-    res.status(500).json({
-      error: 'Failed to get savings statistics',
-      message: error.message
-    });
+    console.error("Error fetching savings statistics:", error);
+    res.status(500).json({ message: "Error fetching statistics" });
   }
 });
 
-// Update account status (admin/manager only)
-router.put('/:id/status', authenticateToken, requireAdminOrManager, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!['active', 'inactive', 'closed'].includes(status)) {
-      return res.status(400).json({
-        error: 'Invalid status'
-      });
-    }
-
-    const account = await getRow('SELECT * FROM savings WHERE id = ?', [id]);
-    if (!account) {
-      return res.status(404).json({
-        error: 'Savings account not found'
-      });
-    }
-
-    await runQuery(`
-      UPDATE savings SET status = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [status, id]);
-
-    res.json({
-      message: 'Account status updated successfully',
-      account_id: id,
-      new_status: status
-    });
-
-  } catch (error) {
-    console.error('Update account status error:', error);
-    res.status(500).json({
-      error: 'Failed to update account status',
-      message: error.message
-    });
-  }
-});
-
-module.exports = router; 
+module.exports = router;

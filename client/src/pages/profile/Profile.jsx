@@ -7,8 +7,8 @@ const Profile = () => {
   const { isDarkMode } = useTheme();
 
   return (
-    <div className={`py-4 ${isDarkMode ? "bg-dark text-light" : "bg-light"}`}>
-      <div className="container">
+    <div className={`p-4 ${isDarkMode ? "bg-dark text-light" : "bg-light"}`}>
+      <div className="container-fluid">
         <div className="row">
           <div className="col-md-8 mx-auto">
             <div

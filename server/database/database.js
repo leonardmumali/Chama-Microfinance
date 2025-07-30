@@ -141,6 +141,53 @@ const initializeDatabase = async () => {
             )
         `);
 
+    // Account types table
+    await runQuery(`
+            CREATE TABLE IF NOT EXISTS account_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                code TEXT UNIQUE NOT NULL,
+                description TEXT,
+                min_balance DECIMAL(10,2) DEFAULT 0,
+                max_balance DECIMAL(10,2),
+                interest_rate DECIMAL(5,2) DEFAULT 0,
+                monthly_fee DECIMAL(10,2) DEFAULT 0,
+                withdrawal_limit DECIMAL(10,2),
+                deposit_limit DECIMAL(10,2),
+                requires_kyc BOOLEAN DEFAULT 0,
+                allows_group_accounts BOOLEAN DEFAULT 0,
+                allows_joint_accounts BOOLEAN DEFAULT 0,
+                status TEXT DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+    // Accounts table
+    await runQuery(`
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                account_type_id INTEGER NOT NULL,
+                account_name TEXT NOT NULL,
+                account_number TEXT UNIQUE NOT NULL,
+                virtual_account_number TEXT UNIQUE,
+                balance DECIMAL(10,2) DEFAULT 0,
+                available_balance DECIMAL(10,2) DEFAULT 0,
+                interest_rate DECIMAL(5,2) DEFAULT 0,
+                currency TEXT DEFAULT 'KES',
+                status TEXT DEFAULT 'active' CHECK(status IN ('active', 'pending', 'frozen', 'closed')),
+                group_id INTEGER,
+                joint_members TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_transaction_date DATETIME,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (account_type_id) REFERENCES account_types(id),
+                FOREIGN KEY (group_id) REFERENCES groups(id)
+            )
+        `);
+
     // Enhanced loans table
     await runQuery(`
             CREATE TABLE IF NOT EXISTS loans (
@@ -408,6 +455,87 @@ const insertDefaultRolesPermissions = async () => {
   }
 };
 
+// Insert default account types
+const insertDefaultAccountTypes = async () => {
+  try {
+    const accountTypes = [
+      {
+        name: "Personal Savings",
+        code: "PERSONAL",
+        description: "Basic personal savings account with competitive interest rates",
+        min_balance: 1000,
+        interest_rate: 5.0,
+        requires_kyc: 0,
+        allows_group_accounts: 0,
+        allows_joint_accounts: 0
+      },
+      {
+        name: "Youth Group Account",
+        code: "YOUTH_GROUP",
+        description: "Special account for youth groups with enhanced benefits",
+        min_balance: 5000,
+        interest_rate: 6.5,
+        requires_kyc: 1,
+        allows_group_accounts: 1,
+        allows_joint_accounts: 0
+      },
+      {
+        name: "Women Group Account",
+        code: "WOMEN_GROUP",
+        description: "Empowering women through group savings",
+        min_balance: 3000,
+        interest_rate: 6.0,
+        requires_kyc: 1,
+        allows_group_accounts: 1,
+        allows_joint_accounts: 0
+      },
+      {
+        name: "Joint Savings Account",
+        code: "JOINT_SAVINGS",
+        description: "Shared savings account for families or partners",
+        min_balance: 2000,
+        interest_rate: 5.5,
+        requires_kyc: 1,
+        allows_group_accounts: 0,
+        allows_joint_accounts: 1
+      },
+      {
+        name: "Staff Account",
+        code: "STAFF",
+        description: "Special account for organization staff members",
+        min_balance: 0,
+        interest_rate: 7.0,
+        requires_kyc: 0,
+        allows_group_accounts: 0,
+        allows_joint_accounts: 0
+      }
+    ];
+
+    for (const accountType of accountTypes) {
+      await runQuery(
+        `
+                INSERT OR IGNORE INTO account_types (name, code, description, min_balance, interest_rate, requires_kyc, allows_group_accounts, allows_joint_accounts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+        [
+          accountType.name,
+          accountType.code,
+          accountType.description,
+          accountType.min_balance,
+          accountType.interest_rate,
+          accountType.requires_kyc,
+          accountType.allows_group_accounts,
+          accountType.allows_joint_accounts
+        ]
+      );
+    }
+
+    console.log("Default account types inserted");
+  } catch (error) {
+    console.error("Error inserting default account types:", error);
+  }
+};
+
 // Insert default settings
 const insertDefaultSettings = async () => {
   try {
@@ -453,6 +581,7 @@ const init = async () => {
   await initializeDatabase();
   await createDefaultAdmin();
   await insertDefaultRolesPermissions();
+  await insertDefaultAccountTypes();
   await insertDefaultSettings();
 };
 
